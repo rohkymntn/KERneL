@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 from torch.utils.cpp_extension import load_inline
 
-SAMPLE_NAME = "matmul_cuda"
-SAMPLE_FUNCTION = "matrix_multiply_cuda"
+SAMPLE_NAME = "diag_matmul"
+SAMPLE_FUNCTION = "diag_matmul_cuda"
 with open("sample/kernel.cu", "r") as file:
     kernel_cuda_source = file.read()
 with open("sample/kernel.cpp", "r") as file:

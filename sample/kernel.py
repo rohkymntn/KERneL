@@ -3,29 +3,31 @@ import torch.nn as nn
 
 class Model(nn.Module):
     """
-    Simple model that performs a single square matrix multiplication (C = A * B)
+    Simple model that performs a matrix multiplication of a diagonal matrix with another matrix.
+    C = diag(A) * B
     """
     def __init__(self):
         super(Model, self).__init__()
     
-    def forward(self, A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+    def forward(self, A, B):
         """
         Performs the matrix multiplication.
 
         Args:
-            A (torch.Tensor): Input matrix A of shape (N, N).
-            B (torch.Tensor): Input matrix B of shape (N, N).
+            A (torch.Tensor): A 1D tensor representing the diagonal of the diagonal matrix. Shape: (N,).
+            B (torch.Tensor): A 2D tensor representing the second matrix. Shape: (N, M).
 
         Returns:
-            torch.Tensor: Output matrix C of shape (N, N).
+            torch.Tensor: The result of the matrix multiplication. Shape: (N, M).
         """
-        return torch.matmul(A, B)
+        return torch.diag(A) @ B
 
-N = 2048
+M = 4096
+N = 4096
 
 def get_inputs():
-    A = torch.randn(N, N)
-    B = torch.randn(N, N)
+    A = torch.randn(N)
+    B = torch.randn(N, M)
     return [A, B]
 
 def get_init_inputs():

@@ -1,1 +1,1 @@
-torch::Tensor matrix_multiply_cuda(torch::Tensor A, torch::Tensor B);
+torch::Tensor diag_matmul_cuda(torch::Tensor diag, torch::Tensor mat);
