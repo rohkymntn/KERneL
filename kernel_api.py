@@ -19,10 +19,10 @@ kernel_module = load_inline(
 
 def time_execution_with_cuda_event():
     from sample.kernel import Model, get_inputs
-    torch_model = Model()
-    inputs = get_inputs()
-
     device = torch.cuda.current_device()
+    torch_model = Model(device=device)
+    inputs = [inp.to(device=device) for inp in get_inputs()]
+
     elapsed_times_torch = []
     elapsed_times_kernel = []
     num_trials = 100
