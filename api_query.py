@@ -1,9 +1,10 @@
 from openai import OpenAI
 import json
-from typing import Union, Tuple
+from typing import Union, Tuple, List
 import os
 import requests
 from datetime import datetime
+import concurrent.futures
 
 os.environ["NIM_ENABLE_KV_CACHE_REUSE"] = "1"
 
@@ -12,12 +13,13 @@ PROMPT_PREFIX_PATH = "prompt_prefix.txt"
 PROMPT_POSTFIX_PATH = "prompt_postfix.txt"
 MAX_REASONING_TOKENS = 2000
 MAX_REFINEMENT_TOKENS = 500
+NUM_SAMPLES = 10
 
 BASE_URL = "https://integrate.api.nvidia.com/v1"
 EXTRACTION_MODEL = "qwen/qwen2.5-7b-instruct" #"meta/llama-3.2-3b-instruct"
 DEEPSEEKR1_MODEL = "deepseek-ai/deepseek-r1"
   
-def save_kernels(cpp_kernel, cuda_kernel, directory="sample"):
+def save_kernels(kernels: List[Tuple[str, str]], directory="sample"):
     # Ensure the output directory exists
     if not os.path.exists(directory):
         os.makedirs(directory)
@@ -25,19 +27,18 @@ def save_kernels(cpp_kernel, cuda_kernel, directory="sample"):
     # Get the current date and time for the filename
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Construct the filenames
-    cpp_filename = os.path.join(directory, f"kernel_{timestamp}.cpp")
-    cu_filename = os.path.join(directory, f"kernel_{timestamp}.cu")
+    for idx, (cpp_kernel, cuda_kernel) in enumerate(kernels):
+        cpp_filename = os.path.join(directory, f"kernel_{idx}_{timestamp}.cpp")
+        cu_filename = os.path.join(directory, f"kernel_{idx}_{timestamp}.cu")
 
-    # Save the cpp_kernel to a file
-    with open(cpp_filename, "w") as cpp_file:
-        cpp_file.write(cpp_kernel)
-    print(f"Saved C++ kernel to {cpp_filename}")
+        with open(cpp_filename, "w") as cpp_file:
+            cpp_file.write(cpp_kernel)
+        print(f"Saved C++ kernel to {cpp_filename}")
 
-    # Save the cuda_kernel to a file
-    with open(cu_filename, "w") as cu_file:
-        cu_file.write(cuda_kernel)
-    print(f"Saved CUDA kernel to {cu_filename}")
+        # Save the cuda_kernel to a file
+        with open(cu_filename, "w") as cu_file:
+            cu_file.write(cuda_kernel)
+        print(f"Saved CUDA kernel to {cu_filename}")
 
 def initialize_client(api_key = API_KEY, base_url="https://integrate.api.nvidia.com/v1"):
     return OpenAI(
@@ -45,7 +46,7 @@ def initialize_client(api_key = API_KEY, base_url="https://integrate.api.nvidia.
         api_key = api_key
     )
 
-def query_kernel(client: OpenAI, 
+def query_kernel_generation(client: OpenAI, 
                  model_type: str, 
                  pytorch_function: str, 
                  additional_context: str = "",
@@ -86,7 +87,7 @@ def query_kernel(client: OpenAI,
 
     return reasoning_response
 
-def query_refine(response_text, refinement_client, model_type, system_prompt=None, stream=True):
+def query_extraction(response_text, refinement_client, model_type, system_prompt=None, stream=True):
     if system_prompt is None:
         system_prompt = """
         You are given a text that contains CUDA wrapper code for kernel.cpp and kernel.cu. 
@@ -126,24 +127,11 @@ def query_refine(response_text, refinement_client, model_type, system_prompt=Non
 
     return completion
 
-def extract_kernels(tagged_response):
-    # Find the <cpp_kernel> section
-    cpp_start = tagged_response.find("<cpp_kernel>")
-    cpp_end = tagged_response.find("</cpp_kernel>") + len("</cpp_kernel>")
-    cpp_kernel = tagged_response[cpp_start:cpp_end].strip() if cpp_start != -1 else "<cpp_kernel></cpp_kernel>"
-
-    # Find the <kernel_cu> section
-    cu_start = tagged_response.find("<kernel_cu>")
-    cu_end = tagged_response.find("</kernel_cu>") + len("</kernel_cu>")
-    kernel_cu = tagged_response[cu_start:cu_end].strip() if cu_start != -1 else "<kernel_cu></kernel_cu>"
-
-    return cpp_kernel, kernel_cu
-
 def process_response(reasoning_text: str, 
                      refinement_client: OpenAI, 
                      refinement_type: str) -> Tuple[str, str]:
     
-    extracted_answers = query_refine(response_text = reasoning_text, 
+    extracted_answers = query_extraction(response_text = reasoning_text, 
                                    refinement_client = refinement_client, 
                                    model_type = refinement_type, 
                                    stream = True)
@@ -178,26 +166,53 @@ def process_response(reasoning_text: str,
         print(f"Error parsing response: {e}")
         return None, None
 
+def run_single_query(client, model_type, pytorch_function, additional_context, stream):
+    completion = query_kernel_generation(
+        client = client, 
+        model_type = model_type, 
+        pytorch_function=pytorch_function, 
+        additional_context=additional_context,
+        stream=True
+    )
+    return completion
 
-def query_cuda_and_cpp_kernel(pytorch_function: str) -> Tuple[str, str]:
+def generate_kernel(pytorch_function: str, additional_context: str) -> Tuple[str, str]:
     # Initialize client and query API
     
     client = initialize_client(api_key = API_KEY, base_url = BASE_URL)
     print("Client Initialized")
     
-    completion = query_kernel(client = client, 
-                        model_type = DEEPSEEKR1_MODEL, 
-                        pytorch_function = pytorch_function, 
-                        response_format= "json", 
-                        stream=True) 
+    generated_kernels = []
+    processed_kernels = []
+    query_inputs = (client, DEEPSEEKR1_MODEL, pytorch_function, additional_context, True)
     
-    print("Response Found")
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = [
+            executor.submit(run_single_query, *query_inputs)
+            for query_id in range(NUM_SAMPLES)
+        ]
 
-    cpp_kernel, cuda_kernel = process_response(completion, 
-                     client, 
-                     refinement_type = EXTRACTION_MODEL)
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            generated_kernels.append(result)
 
-    return cpp_kernel, cuda_kernel
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        # Submit processing tasks for each generated kernel
+        process_futures = [
+            executor.submit(process_response, completion, client, EXTRACTION_MODEL)
+            for completion in generated_kernels
+        ]
+
+        # Collect the processed kernels (cpp_kernel, cuda_kernel) as they complete
+        for future in concurrent.futures.as_completed(process_futures):
+            try:
+                cpp_kernel, cuda_kernel = future.result()
+                processed_kernels.append((cpp_kernel, cuda_kernel))
+                print(f"Kernel processed and collected: {len(processed_kernels)}")
+            except Exception as e:
+                print(f"Error processing a kernel: {e}")
+
+    return processed_kernels
 
 if __name__ == '__main__':
     pytorch_function = """
@@ -208,9 +223,9 @@ if __name__ == '__main__':
         return a + b
     """
 
-    cpp_kernel, cuda_kernel = query_cuda_and_cpp_kernel(pytorch_function)
+    kernels = generate_kernel(pytorch_function)
 
-    save_kernels(cpp_kernel, cuda_kernel, directory = "sample")
+    save_kernels(kernels, directory = "sample")
 
 
 def debug():
@@ -341,7 +356,7 @@ def debug():
     if False:
         deepseek_client = initialize_client(api_key = API_KEY, base_url = BASE_URL)
         print("Client Initialized")
-        completion = query_kernel(client = deepseek_client, 
+        completion = query_kernel_generation(client = deepseek_client, 
                             model_type = DEEPSEEKR1_MODEL, 
                             pytorch_function = pytorch_function, 
                             response_format= "json", 
