@@ -64,6 +64,7 @@ def initialize_task():
     try:
         data = request.get_json()
         python_source = data.get("python_source", "")
+        num_trials = data.get("num_trials", 100)
 
         initialized, result = initialize_python_module(python_source)
         if initialized:
@@ -75,7 +76,7 @@ def initialize_task():
             task_id = uuid4()
             TASKS[task_id] = [model, inputs]
 
-            average_time = time_execution_with_cuda_event(model, inputs)
+            average_time = time_execution_with_cuda_event(model, inputs, num_trials)
             response = {
                 "status": "Task initialized successfully",
                 "torch_time": average_time,
