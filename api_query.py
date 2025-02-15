@@ -2,27 +2,23 @@ from openai import OpenAI
 import json
 
 API_KEY = "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"
+PROMPT_PREFIX_PATH = "prompt_prefix.txt"
+PROMPT_POSTFIX_PATH = "prompt_postfix.txt"
 
-# Initialize the DeepSeekR1 client
+# Initialize client
 def initialize_client(api_key = API_KEY, base_url="https://integrate.api.nvidia.com/v1"):
     return OpenAI(
         base_url=base_url,
         api_key=api_key
     )
 
-def query_api(client, model_type, pytorch_function, response_format="text", stream=True):
-    if response_format == "json":
-        system_prompt = """
-        You are a CUDA kernel generator. Convert the provided PyTorch function into CUDA code.
-        Ensure your response is a valid JSON object with the following structure:
-        {
-            "cuda_kernel": "<generated CUDA kernel>",
-            "reasoning": "<explanation of the kernel logic>"
-        }
-        Always use proper JSON syntax with double quotes for property names and string values.
-        """
-    else:
-        system_prompt = "You are a CUDA kernel generator."
+def query_kernel(client, model_type, pytorch_function, response_format="text", stream=True):
+    with open(PROMPT_PREFIX_PATH, 'r') as file:
+        prompt_prefix = file.read()
+    with open(PROMPT_POSTFIX_PATH, 'r') as file:
+        prompt_postfix = file.read()
+
+    system_prompt = f"{prompt_prefix} {pytorch_function} {prompt_postfix}"
 
     completion = client.chat.completions.create(
         model=model_type,
@@ -32,33 +28,62 @@ def query_api(client, model_type, pytorch_function, response_format="text", stre
         ],
         temperature=0.6,
         top_p=0.7,
-        max_tokens=4096,
-        response_format={'type': 'json_object'} if response_format == "json" else None,
+        max_tokens=1000,
         stream=stream
+        #response_format={'type': 'json_object'} if response_format == "json" else None,
     )
 
     return completion
 
-def process_response(completion, response_format="text"):
-    print([chunk for chunk in completion])
-    if response_format == "json":
-        try:
-            for chunk in completion:
-                content = chunk.choices[0].delta.content
-                if content:
-                    result = json.loads(content)
-                    print("Generated CUDA Kernel:")
-                    print(result.get("cuda_kernel", "No CUDA kernel found"))
-                    print("\nReasoning:")
-                    print(result.get("reasoning", "No reasoning provided"))
-                    return result
-        except json.JSONDecodeError as e:
-            print(f"Error parsing JSON response: {e}")
-    else:
-        for chunk in completion:
-            if chunk.choices[0].delta.content is not None:
-                print(chunk.choices[0].delta.content, end="")
-        print("\nFinished printing all")
+def query_refine(response_text, refinement_client, model_type, stream = True):
+    system_prompt = """
+    You are given a text. Identify and extract the CUDA kernel code from the text. 
+    Only return the CUDA kernel code. Do not return any additional explanation or comments.
+    """
+
+    completion = refinement_client.chat.completions.create(
+        model=model_type,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Extract the CUDA kernel code from the following text:\n{response_text}"}
+        ],
+        temperature=0.6,
+        top_p=0.7,
+        max_tokens=100,
+        stream=stream
+    )
+    
+    return completion
+
+def process_response(completion, refinement_client, refinement_type):
+    print("Processing Response...")
+
+    reasoning_response = []
+    for chunk in completion:
+        #print("Processing text chunk...")
+        content = chunk.choices[0].delta.content
+        if content:
+            print(content, end="")
+        reasoning_response.append(content)
+    print("\nFinished printing all")
+
+    reasoning_response = "".join(reasoning_response)
+
+    cuda_completion = query_refine(response_text = reasoning_response, 
+                                   refinement_client = refinement_client, 
+                                   model_type = refinement_type, 
+                                   stream = True)
+
+    cuda_response = []
+    for chunk in cuda_completion:
+        #print("Processing text chunk...")
+        content = chunk.choices[0].delta.content
+        if content:
+            print(content, end="")
+        cuda_response.append(content)
+    print("\nFinished printing all")
+
+    return "".join(cuda_response)
 
 if __name__ == '__main__':
     pytorch_function = """
@@ -70,21 +95,22 @@ if __name__ == '__main__':
     """
 
     # Initialize client and query API
-    BASE_FALCON3_URL = "https://integrate.api.nvidia.com/v1"
-    FALCON3_MODEL = "tiiuae/falcon3-7b-instruct"
+    BASE_URL = "https://integrate.api.nvidia.com/v1"
+    EXTRACTION_MODEL = "meta/llama-3.2-3b-instruct"#"tiiuae/falcon3-7b-instruct"
+    DEEPSEEKR1_MODEL = "deepseek-ai/deepseek-r1"
 
-    client = initialize_client(api_key = API_KEY, base_url = BASE_FALCON3_URL)
+    deepseek_client = initialize_client(api_key = API_KEY, base_url = BASE_URL)
     print("Client Initialized")
-    completion = query_api(client = client, 
-                           model_type = FALCON3_MODEL, 
+    completion = query_kernel(client = deepseek_client, 
+                           model_type = DEEPSEEKR1_MODEL, 
                            pytorch_function = pytorch_function, 
-                           response_format="json", 
+                           response_format= "json", 
                            stream=True)
     print("Response Found")
     
-    # Process the response
-    print("Completition Parsed")
-    process_response(completion, response_format="json")
+    refinement_client = initialize_client(api_key = API_KEY, base_url = BASE_URL)
+    process_response(completion, refinement_client, refinement_type = EXTRACTION_MODEL)
+
     print("All Done")
 
 
