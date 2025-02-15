@@ -1,0 +1,1 @@
+torch::Tensor matrix_multiply_cuda(torch::Tensor A, torch::Tensor B);
